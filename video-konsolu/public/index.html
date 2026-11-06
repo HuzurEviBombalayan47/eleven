@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#10131a"><title>Video Konsolu</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#10131a;color:#f5f6f9}*{box-sizing:border-box}
+body{margin:0;padding:20px 14px}main{max-width:980px;margin:auto}
+h1{font-size:1.6rem;margin:0 0 6px}h2{font-size:1rem;margin:0 0 12px;color:#d8dfeb}.muted{color:#aab4c4;font-size:.9rem;line-height:1.5}
+.card{padding:16px;border:1px solid #313b4b;background:#1a202b;border-radius:14px;margin:12px 0}
+label{display:block;margin:12px 0 5px;font-weight:650}input,textarea{width:100%;border:1px solid #435066;border-radius:9px;background:#111722;color:#fff;font:inherit;padding:11px}
+textarea{min-height:100px;resize:vertical}button{border:0;border-radius:9px;padding:11px 14px;font:inherit;font-weight:650;background:#354256;color:#fff}
+button.primary{background:#ff766d;color:#17191d}button.danger{background:#7d3037}button:disabled{opacity:.5}
+.row{display:flex;gap:8px;flex-wrap:wrap}.row button{flex:1;min-width:95px}.stats{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.session{display:flex;align-items:center;gap:10px;padding:10px;border-top:1px solid #343d4b}.session input{width:auto}.session span{flex:1}.session small{color:#b2bccb;display:block;overflow-wrap:anywhere}
+#message{min-height:24px;color:#ffcabf}.preview{width:100%;border-radius:9px;margin-top:12px}summary{cursor:pointer;font-weight:650}
+</style></head><body><main>
+<h1>Video Konsolu</h1><div class="muted">Oturumları tek ekrandan yönet.</div>
+<section class="card" id="login"><label for="key">Konsol anahtarı</label><input id="key" type="password" autocomplete="off"><p><button id="connect" class="primary">Bağlan</button></p></section>
+<div id="dashboard" hidden>
+<section class="card">
+<h2>Yeni oturumlar</h2>
+<label for="url">YouTube bağlantısı</label><input type="url" id="url" placeholder="https://youtu.be/…">
+<label for="count">Oturum sayısı</label><input type="number" id="count" value="1" min="1" max="200">
+<details><summary>Bağlantılar</summary><p class="muted">Webshare listesini doğrudan yapıştır. Her satır IP:port:kullanıcı:şifre biçiminde olmalı.</p><textarea id="proxies" autocomplete="off" placeholder="IP:port:kullanıcı:şifre"></textarea></details>
+<p><button class="primary" id="start">Oturumları başlat</button></p><div id="message" role="status"></div>
+</section>
+<section class="card"><div class="stats"><h2>Kontroller</h2><span class="muted" id="summary">0 oturum</span></div>
+<div class="row"><button data-action="play">▶ Oynat</button><button data-action="pause">Ⅱ Duraklat</button><button data-action="rewind">−10 sn</button><button data-action="forward">+10 sn</button></div>
+<p class="muted"><label><input type="checkbox" id="selected" style="width:auto"> Yalnız seçilen oturumlara uygula</label></p>
+<button class="danger" id="stop">Tüm oturumları kapat</button></section>
+<section class="card"><h2>Oturumlar</h2><div id="sessions" class="muted">Henüz oturum yok.</div><img class="preview" id="screen" alt="Seçilen oturumun görüntüsü" hidden></section>
+</div></main><script>
+'use strict';
+let key = '', busy = false, selectedIds = new Set();
+const $ = selector => document.querySelector(selector);
+async function request(path, method = 'GET', data) {
+  const options = {method, headers: {Authorization: 'Bearer ' + key}, cache: 'no-store'};
+  if (data) { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(data); }
+  const response = await fetch(path, options);
+  if (!response.ok) { let info; try { info = await response.json(); } catch {} throw Error(info?.error || 'Bağlantı hatası'); }
+  return response;
+}
+function tell(text) { $('#message').textContent = text; }
+async function refresh() {
+  try {
+    const data = await (await request('/api/status')).json();
+    $('#count').max = data.maxSessions;
+    $('#summary').textContent = data.job ? data.job.done + ' / ' + data.job.total + ' hazırlanıyor' : data.entries.length + ' oturum';
+    const list = $('#sessions');
+    list.replaceChildren();
+    if (!data.entries.length) list.textContent = 'Henüz oturum yok.';
+    for (const entry of data.entries) {
+      const row = document.createElement('div'); row.className = 'session';
+      const check = document.createElement('input'); check.type = 'checkbox'; check.checked = selectedIds.has(entry.id);
+      check.setAttribute('aria-label', 'Oturum ' + entry.id + ' seç');
+      check.onchange = () => check.checked ? selectedIds.add(entry.id) : selectedIds.delete(entry.id);
+      const text = document.createElement('span'); text.append('Oturum ' + entry.id);
+      const sub = document.createElement('small'); sub.textContent = entry.state + (entry.ip ? ' • ' + entry.ip : ''); text.append(sub);
+      const view = document.createElement('button'); view.textContent = 'Görüntü'; view.onclick = () => screenshot(entry.id);
+      row.append(check, text, view); list.append(row);
+    }
+  } catch (error) { tell(error.message); }
+}
+async function screenshot(id) {
+  try {
+    const data = await (await request('/api/screen/' + id)).blob();
+    const image = $('#screen'); if (image.dataset.objectUrl) URL.revokeObjectURL(image.dataset.objectUrl);
+    image.dataset.objectUrl = URL.createObjectURL(data); image.src = image.dataset.objectUrl; image.hidden = false;
+  } catch (error) { tell(error.message); }
+}
+$('#connect').onclick = async () => {
+  key = $('#key').value.trim();
+  try { await request('/api/status'); $('#login').hidden = true; $('#dashboard').hidden = false; $('#key').value = ''; refresh(); setInterval(refresh, 2200); }
+  catch (error) { alert(error.message); }
+};
+$('#start').onclick = async () => {
+  if (busy) return; busy = true; $('#start').disabled = true;
+  try {
+    await request('/api/start', 'POST', {url: $('#url').value.trim(), count: Number($('#count').value), proxies: $('#proxies').value});
+    $('#proxies').value = ''; selectedIds.clear(); tell('Oturumlar hazırlanıyor.'); refresh();
+  } catch (error) { tell(error.message); }
+  finally { busy = false; $('#start').disabled = false; }
+};
+document.querySelectorAll('[data-action]').forEach(button => button.onclick = async () => {
+  try {
+    const ids = $('#selected').checked ? [...selectedIds] : 'all';
+    if (Array.isArray(ids) && !ids.length) throw Error('Önce en az bir oturum seç.');
+    await request('/api/command', 'POST', {action: button.dataset.action, ids}); tell('Komut gönderildi.'); refresh();
+  } catch (error) { tell(error.message); }
+});
+$('#stop').onclick = async () => { try { await request('/api/stop', 'POST', {}); selectedIds.clear(); $('#screen').hidden = true; tell('Oturumlar kapatıldı.'); refresh(); } catch (error) { tell(error.message); } };
+</script></body></html>
